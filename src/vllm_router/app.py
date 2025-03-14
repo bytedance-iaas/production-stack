@@ -1,8 +1,7 @@
 import logging
 import threading
-from contextlib import asynccontextmanager
-
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from vllm_router.dynamic_config import (
@@ -217,7 +216,7 @@ def main():
     initialize_all(app, args)
     if args.log_stats:
         threading.Thread(
-            target=log_stats, args=(args.log_stats_interval,), daemon=True
+            target=log_stats, args=(app, args.log_stats_interval,), daemon=True
         ).start()
 
     # Workaround to avoid footguns where uvicorn drops requests with too
