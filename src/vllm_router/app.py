@@ -5,6 +5,10 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
+#import sys,os
+#parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Add the parent directory to the Python path
+#sys.path.append(parent_dir)
 from vllm_router.dynamic_config import (
     DynamicRouterConfig,
     get_dynamic_config_watcher,
@@ -80,7 +84,7 @@ async def lifespan(app: FastAPI):
     engine_stats_scraper.close()
 
     logger.info("Closing service discovery module")
-    service_discovery = get_service_discovery()
+    service_discovery,_ = get_service_discovery()
     service_discovery.close()
 
     # Close the optional dynamic config watcher
@@ -115,11 +119,19 @@ def initialize_all(app: FastAPI, args):
             port=args.k8s_port,
             label_selector=args.k8s_label_selector,
         )
+    elif args.service_discovery == "pd":
+        initialize_service_discovery(
+            ServiceDiscoveryType.PD,
+            prefill_urls=parse_static_urls(args.static_backends_prefill),
+            decode_urls=parse_static_urls(args.static_backends_decode),
+            models=parse_static_model_names(args.static_models),
+        )
+    
     else:
         raise ValueError(f"Invalid service discovery type: {args.service_discovery}")
 
     # Initialize singletons via custom functions.
-    initialize_engine_stats_scraper(args.engine_stats_interval)
+    initialize_engine_stats_scraper(args.engine_stats_interval,args.service_discovery)
     initialize_request_stats_monitor(args.request_stats_window)
 
     if args.enable_batch_api:
@@ -217,7 +229,7 @@ def main():
     initialize_all(app, args)
     if args.log_stats:
         threading.Thread(
-            target=log_stats, args=(args.log_stats_interval,), daemon=True
+            target=log_stats, args=(app,args.log_stats_interval), daemon=True
         ).start()
 
     # Workaround to avoid footguns where uvicorn drops requests with too

@@ -63,7 +63,7 @@ class EngineStats:
 
 
 class EngineStatsScraper(metaclass=SingletonMeta):
-    def __init__(self, scrape_interval: float):
+    def __init__(self, scrape_interval: float,service_type:str):
         """
         Initialize the scraper to periodically fetch metrics from all serving engines.
 
@@ -84,12 +84,15 @@ class EngineStatsScraper(metaclass=SingletonMeta):
                 "EngineStatsScraper must be initialized with scrape_interval"
             )
         self.engine_stats: Dict[str, EngineStats] = {}
+        self.prefill_engine_stats: Dict[str, EngineStats] = {}
+        self.decode_engine_stats: Dict[str, EngineStats] = {}
         self.engine_stats_lock = threading.Lock()
         self.scrape_interval = scrape_interval
+        self.service_type=service_type
 
         # scrape thread
         self.running = True
-        self.scrape_thread = threading.Thread(target=self._scrape_worker, daemon=True)
+        self.scrape_thread = threading.Thread(target=self._scrape_worker,args=(self.service_type,), daemon=True)
         self.scrape_thread.start()
         self._initialized = True
 
@@ -109,7 +112,7 @@ class EngineStatsScraper(metaclass=SingletonMeta):
             return None
         return engine_stats
 
-    def _scrape_metrics(self):
+    def _scrape_metrics(self,service_type=None):
         """
         Scrape metrics from all serving engines.
 
@@ -118,22 +121,57 @@ class EngineStatsScraper(metaclass=SingletonMeta):
         stored in self.engine_stats.
 
         """
-        collected_engine_stats = {}
-        endpoints = get_service_discovery().get_endpoint_info()
-        logger.info(f"Scraping metrics from {len(endpoints)} serving engine(s)")
-        for info in endpoints:
-            url = info.url
-            engine_stats = self._scrape_one_endpoint(url)
-            if engine_stats:
-                collected_engine_stats[url] = engine_stats
+        
+        if service_type == "pd":
+            collected_prefill_engine_stats = {}
+            collected_decode_engine_stats = {}
+            #def get_endpoint_info(self) -> List[EndpointInfo]:
+            decode_endpoints = get_service_discovery()[0].get_endpoint_info("decode")
+            prefill_endpoints=get_service_discovery()[0].get_endpoint_info("prefill")
 
-        with self.engine_stats_lock:
-            old_urls = list(self.engine_stats.keys())
-            for old_url in old_urls:
-                if old_url not in collected_engine_stats:
-                    del self.engine_stats[old_url]
-            for url, stats in collected_engine_stats.items():
-                self.engine_stats[url] = stats
+            for info in decode_endpoints:
+                url = info.url
+                engine_stats = self._scrape_one_endpoint(url)
+                if engine_stats:
+                    collected_decode_engine_stats[url] = engine_stats
+                with self.engine_stats_lock:
+                    old_urls = list(self.decode_engine_stats.keys())
+                    for old_url in old_urls:
+                        if old_url not in collected_decode_engine_stats:
+                            del self.engine_stats[old_url]
+                    for url, stats in collected_decode_engine_stats.items():
+                        self.decode_engine_stats[url] = stats
+
+            for info in prefill_endpoints:
+                url = info.url
+                engine_stats = self._scrape_one_endpoint(url)
+                if engine_stats:
+                    collected_prefill_engine_stats[url] = engine_stats
+                with self.engine_stats_lock:
+                    old_urls = list(self.prefill_engine_stats.keys())
+                    for old_url in old_urls:
+                        if old_url not in collected_prefill_engine_stats:
+                            del self.engine_stats[old_url]
+                    for url, stats in collected_prefill_engine_stats.items():
+                        self.prefill_engine_stats[url] = stats
+        else:
+            collected_engine_stats = {}
+            endpoints = get_service_discovery()[0].get_endpoint_info()
+            logger.info(f"Scraping metrics from {len(endpoints)} serving engine(s)")
+            
+            for info in endpoints:
+                url = info.url
+                engine_stats = self._scrape_one_endpoint(url)
+                if engine_stats:
+                    collected_engine_stats[url] = engine_stats
+
+            with self.engine_stats_lock:
+                old_urls = list(self.engine_stats.keys())
+                for old_url in old_urls:
+                    if old_url not in collected_engine_stats:
+                        del self.engine_stats[old_url]
+                for url, stats in collected_engine_stats.items():
+                    self.engine_stats[url] = stats
 
     def _sleep_or_break(self, check_interval: float = 1):
         """
@@ -145,7 +183,7 @@ class EngineStatsScraper(metaclass=SingletonMeta):
                 break
             time.sleep(check_interval)
 
-    def _scrape_worker(self):
+    def _scrape_worker(self,service_type):
         """
         Periodically scrape metrics from all serving engines in the background.
 
@@ -155,18 +193,26 @@ class EngineStatsScraper(metaclass=SingletonMeta):
 
         """
         while self.running:
-            self._scrape_metrics()
+            self._scrape_metrics(service_type)
             self._sleep_or_break()
 
-    def get_engine_stats(self) -> Dict[str, EngineStats]:
+    def get_engine_stats(self,infer_stage=None) -> Dict[str, EngineStats]:
         """
         Retrieve a copy of the current engine statistics.
 
         Returns:
             A dictionary mapping engine URLs to their respective EngineStats objects.
         """
-        with self.engine_stats_lock:
-            return self.engine_stats.copy()
+        if self.service_type =="pd":
+            if infer_stage=="prefill":
+                with self.engine_stats_lock:
+                    return self.prefill_engine_stats.copy()
+            else:
+                with self.engine_stats_lock:
+                    return self.decode_engine_stats.copy()
+        else:
+            with self.engine_stats_lock:
+                return self.engine_stats.copy()
 
     def get_health(self) -> bool:
         """
@@ -186,8 +232,8 @@ class EngineStatsScraper(metaclass=SingletonMeta):
         self.scrape_thread.join()
 
 
-def initialize_engine_stats_scraper(scrape_interval: float) -> EngineStatsScraper:
-    return EngineStatsScraper(scrape_interval)
+def initialize_engine_stats_scraper(scrape_interval: float,service_type:str) -> EngineStatsScraper:
+    return EngineStatsScraper(scrape_interval,service_type)
 
 
 def get_engine_stats_scraper() -> EngineStatsScraper:

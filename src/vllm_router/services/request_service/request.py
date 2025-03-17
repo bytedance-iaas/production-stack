@@ -8,7 +8,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from vllm_router.log import init_logger
-from vllm_router.service_discovery import get_service_discovery
+from vllm_router.service_discovery import get_service_discovery,ServiceDiscoveryType
 
 try:
     # Semantic cache integration
@@ -67,7 +67,9 @@ async def process_request(
     # Check if this is a streaming request
     is_streaming = False
     try:
+        logger.info(f"body {body}")
         request_json = json.loads(body)
+        logger.info(f"request_json {request_json}")
         is_streaming = request_json.get("stream", False)
     except:
         # If we can't parse the body as JSON, assume it's not streaming
@@ -79,12 +81,12 @@ async def process_request(
     async with request.app.state.httpx_client_wrapper().stream(
         method=request.method,
         url=backend_url + endpoint,
-        headers=dict(request.headers),
-        content=body,
+        # headers=dict(request.headers),
+        json=body,
         timeout=None,
     ) as backend_response:
         # Yield headers and status code first.
-        yield backend_response.headers, backend_response.status_code
+        # yield backend_response.headers, backend_response.status_code
         # Stream response content.
         async for chunk in backend_response.aiter_bytes():
             total_len += len(chunk)
@@ -133,7 +135,8 @@ async def route_general_request(request: Request, endpoint: str):
     in_router_time = time.time()
     request_id = str(uuid.uuid4())
     request_body = await request.body()
-    request_json = await request.json()  # TODO (ApostaC): merge two awaits into one
+    request_json = await request.json() 
+    logger.info(f"request_body{request_body}") # TODO (ApostaC): merge two awaits into one
     requested_model = request_json.get("model", None)
     if requested_model is None:
         return JSONResponse(
@@ -142,37 +145,71 @@ async def route_general_request(request: Request, endpoint: str):
         )
 
     # TODO (ApostaC): merge two awaits into one
-    endpoints = get_service_discovery().get_endpoint_info()
-    engine_stats = request.app.state.engine_stats_scraper.get_engine_stats()
-    request_stats = request.app.state.request_stats_monitor.get_request_stats(
-        time.time()
-    )
+    service,service_type = get_service_discovery()
+    if service_type == ServiceDiscoveryType.PD:
+        stages = ["prefill", "decode"]
+        max_completion_tokens=request_json['max_completion_tokens']
+        for stage in stages:
+            
+            endpoints = service.get_endpoint_info(stage)
+            engine_stats = request.app.state.engine_stats_scraper.get_engine_stats(stage)
+            request_stats = request.app.state.request_stats_monitor.get_request_stats(time.time())
+            endpoints = list(filter(lambda x: x.model_name == requested_model, endpoints))
+            if not endpoints:
+                return JSONResponse(
+                    status_code=400, content={"error": f"Model {requested_model} not found."}
+                )
 
-    endpoints = list(filter(lambda x: x.model_name == requested_model, endpoints))
-    if not endpoints:
-        return JSONResponse(
-            status_code=400, content={"error": f"Model {requested_model} not found."}
+            logger.info(f"Routing request {request_id} for model: {requested_model}")
+            server_url = request.app.state.router.route_request(endpoints, engine_stats, request_stats, request)
+            curr_time = time.time()
+            logger.info(
+                f"Routing request {request_id} to {stage} server {server_url} at {curr_time}, process time = {curr_time - in_router_time:.4f}"
+            )
+
+            if stage == "prefill":
+                request_json['max_completion_tokens'] = 1
+                async for _ in process_request(request, request_json, server_url, request_id, endpoint=endpoint):
+                    pass
+            else:
+                request_json['max_completion_tokens']=max_completion_tokens
+                stream_generator = process_request(request, request_json, server_url, request_id, endpoint=endpoint)
+                return StreamingResponse(
+                    stream_generator,
+                    media_type="text/event-stream",
+                )
+    else:
+        endpoints=service.get_endpoint_info()
+        engine_stats = request.app.state.engine_stats_scraper.get_engine_stats()
+        request_stats = request.app.state.request_stats_monitor.get_request_stats(
+            time.time()
         )
 
-    logger.debug(f"Routing request {request_id} for model: {requested_model}")
-    server_url = request.app.state.router.route_request(
-        endpoints, engine_stats, request_stats, request
-    )
-    curr_time = time.time()
-    logger.info(
-        f"Routing request {request_id} to {server_url} at {curr_time}, process time = {curr_time - in_router_time:.4f}"
-    )
-    stream_generator = process_request(
-        request,
-        request_body,
-        server_url,
-        request_id,
-        endpoint=endpoint,
-    )
-    headers, status_code = await anext(stream_generator)
-    return StreamingResponse(
-        stream_generator,
-        status_code=status_code,
-        headers={key: value for key, value in headers.items()},
-        media_type="text/event-stream",
-    )
+        endpoints = list(filter(lambda x: x.model_name == requested_model, endpoints))
+        if not endpoints:
+            return JSONResponse(
+                status_code=400, content={"error": f"Model {requested_model} not found."}
+            )
+
+        logger.info(f"Routing request {request_id} for model: {requested_model}")
+        server_url = request.app.state.router.route_request(
+            endpoints, engine_stats, request_stats, request
+        )
+        curr_time = time.time()
+        logger.info(
+            f"Routing request {request_id} to {server_url} at {curr_time}, process time = {curr_time - in_router_time:.4f}"
+        )
+        stream_generator = process_request(
+            request,
+            request_body,
+            server_url,
+            request_id,
+            endpoint=endpoint,
+        )
+        # headers, status_code = await anext(stream_generator)
+        return StreamingResponse(
+            stream_generator,
+            # status_code=status_code,
+            # headers={key: value for key, value in headers.items()},
+            media_type="text/event-stream",
+        )

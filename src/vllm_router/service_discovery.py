@@ -13,11 +13,12 @@ from vllm_router.log import init_logger
 logger = init_logger(__name__)
 
 _global_service_discovery: "Optional[ServiceDiscovery]" = None
-
+_global_service_discovery_type=None
 
 class ServiceDiscoveryType(enum.Enum):
     STATIC = "static"
     K8S = "k8s"
+    PD="pd"
 
 
 @dataclass
@@ -79,6 +80,34 @@ class StaticServiceDiscovery(ServiceDiscovery):
             EndpointInfo(url, model, self.added_timestamp)
             for url, model in zip(self.urls, self.models)
         ]
+class PdServiceDiscovery(ServiceDiscovery):
+    def __init__(self, prefill_urls: List[str], decode_urls:List[str],models: List[str]):
+        # assert len(urls) == len(models), "URLs and models should have the same length"
+        self.prefill_urls = prefill_urls
+        self.decode_urls=decode_urls
+        self.models = models
+        self.added_timestamp = int(time.time())
+
+    def get_endpoint_info(self,infer_stage) -> List[EndpointInfo]:
+        """
+        Get the URLs of the serving engines that are available for
+        querying.
+
+        Returns:
+            a list of engine URLs
+        """
+        if infer_stage=="decode":
+            return [
+                EndpointInfo(url, model, self.added_timestamp)
+                for url, model in zip(self.decode_urls, self.models)
+            ]
+        elif infer_stage=="prefill":
+            return [
+                EndpointInfo(url, model, self.added_timestamp)
+                for url, model in zip(self.prefill_urls, self.models)
+            ]
+        else:
+            logger.error(f"not support {infer_stage}")
 
 
 class K8sServiceDiscovery(ServiceDiscovery):
@@ -281,6 +310,8 @@ def _create_service_discovery(
         return StaticServiceDiscovery(*args, **kwargs)
     elif service_discovery_type == ServiceDiscoveryType.K8S:
         return K8sServiceDiscovery(*args, **kwargs)
+    elif service_discovery_type == ServiceDiscoveryType.PD:
+        return PdServiceDiscovery(*args, **kwargs)
     else:
         raise ValueError("Invalid service discovery type")
 
@@ -303,13 +334,14 @@ def initialize_service_discovery(
         ValueError: if the service discovery module is already initialized
         ValueError: if the service discovery type is invalid
     """
-    global _global_service_discovery
+    global _global_service_discovery, _global_service_discovery_type
     if _global_service_discovery is not None:
         raise ValueError("Service discovery module already initialized")
 
     _global_service_discovery = _create_service_discovery(
         service_discovery_type, *args, **kwargs
     )
+    _global_service_discovery_type = service_discovery_type
     return _global_service_discovery
 
 
@@ -332,7 +364,7 @@ def reconfigure_service_discovery(
     return _global_service_discovery
 
 
-def get_service_discovery() -> ServiceDiscovery:
+def get_service_discovery() -> tuple[ServiceDiscovery, ServiceDiscoveryType]:
     """
     Get the initialized service discovery module.
 
@@ -342,11 +374,11 @@ def get_service_discovery() -> ServiceDiscovery:
     Raises:
         ValueError: if the service discovery module is not initialized
     """
-    global _global_service_discovery
+    global _global_service_discovery, _global_service_discovery_type
     if _global_service_discovery is None:
         raise ValueError("Service discovery module not initialized")
 
-    return _global_service_discovery
+    return _global_service_discovery, _global_service_discovery_type
 
 
 if __name__ == "__main__":

@@ -54,15 +54,15 @@ def validate_args(args):
 def parse_args():
     parser = argparse.ArgumentParser(description="Run the FastAPI app.")
     parser.add_argument(
-        "--host", default="0.0.0.0", help="The host to run the server on."
+        "--host", default="192.168.0.7", help="The host to run the server on."
     )
     parser.add_argument(
         "--port", type=int, default=8001, help="The port to run the server on."
     )
     parser.add_argument(
         "--service-discovery",
-        required=True,
-        choices=["static", "k8s"],
+        choices=["static", "k8s","pd"],
+        default="pd",
         help="The service discovery type.",
     )
     parser.add_argument(
@@ -72,9 +72,21 @@ def parse_args():
         help="The URLs of static backends, separated by commas. E.g., http://localhost:8000,http://localhost:8001",
     )
     parser.add_argument(
+        "--static-backends-prefill",
+        type=str,
+        default="http://192.168.0.7:8010,http://192.168.0.7:8020",
+        help="The URLs of prefill static backends, separated by commas. E.g., http://localhost:8000,http://localhost:8001",
+    )
+    parser.add_argument(
+        "--static-backends-decode",
+        type=str,
+        default="http://192.168.0.7:8030,http://192.168.0.7:8040",
+        help="The URLs of decode static backends, separated by commas. E.g., http://localhost:8000,http://localhost:8001",
+    )
+    parser.add_argument(
         "--static-models",
         type=str,
-        default=None,
+        default="/app/QwQ-32B,/app/QwQ-32B",
         help="The models of static backends, separated by commas. E.g., model1,model2",
     )
     parser.add_argument(
@@ -98,7 +110,7 @@ def parse_args():
     parser.add_argument(
         "--routing-logic",
         type=str,
-        required=True,
+        default="roundrobin",
         choices=["roundrobin", "session"],
         help="The routing logic to use",
     )
@@ -150,13 +162,16 @@ def parse_args():
         default=60,
         help="The sliding window in seconds to compute request statistics.",
     )
+    # parser.add_argument(
+    #     "--log-stats", action="store_true", help="Log statistics periodically."
+    # )
     parser.add_argument(
-        "--log-stats", action="store_true", help="Log statistics periodically."
+        "--log-stats", default=True, help="Log statistics periodically."
     )
     parser.add_argument(
         "--log-stats-interval",
         type=int,
-        default=10,
+        default=5,
         help="The interval in seconds to log statistics.",
     )
 
