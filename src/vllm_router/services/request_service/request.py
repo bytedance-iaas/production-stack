@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 
-from fastapi import Request
+from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from vllm_router.log import init_logger
@@ -12,7 +12,10 @@ from vllm_router.services.request_service.rewriter import (
     get_request_rewriter,
     is_request_rewriter_initialized,
 )
-from vllm_router.service_discovery import get_service_discovery, is_pd_enabled
+from vllm_router.service_discovery import get_service_discovery, is_pd_enabled, request_store, kv_cache_ready_flags
+import asyncio
+
+cond = asyncio.Condition()
 
 try:
     # Semantic cache integration
@@ -196,6 +199,9 @@ async def route_general_request(request: Request, endpoint: str):
             media_type="text/event-stream",
         )
     else:
+        # request_store[request_id] = request_json
+        kv_cache_ready_flags[request_id] = 0 
+
         prefill_endpoints = get_service_discovery().get_endpoint_info_prefill()
         decode_endpoints = get_service_discovery().get_endpoint_info_decode()
         engine_stats_prefill = {k:v for k,v in engine_stats.items() if k in prefill_endpoints}
@@ -210,11 +216,28 @@ async def route_general_request(request: Request, endpoint: str):
         )
         prefill_req_data = request_json.copy()
         prefill_req_data['max_tokens'] = 1
-        prefill_req_data['max_completion_tokens'] = 1      
+        prefill_req_data['max_completion_tokens'] = 1
+        prefill_req_data["request_id"] = request_id
         response = await request.app.state.httpx_client_wrapper().post(
             prefill_url + endpoint,
             json=prefill_req_data)
         response.raise_for_status()        
+
+        async with cond:
+            while kv_cache_ready_flags.get(request_id, 0) != -1:
+                await asyncio.wait_for(cond.wait(), timeout=60)
+            # req_data = request_store.pop(request_id, None)
+            kv_cache_ready_flags.pop(request_id, None)  # Cleanup
+
+        # if req_data is None:
+            # raise HTTPException(status_code=500, detail="Request lost in memory")
+
+        # # Retrieve the original request
+        # request_json = request_store.pop(request_id, None)
+        # kv_cache_ready_flags.pop(request_id, None)
+
+        # if request_json is None:
+        #     raise HTTPException(status_code=500, detail="Request lost in memory")
 
         stream_generator = process_request(
             request,

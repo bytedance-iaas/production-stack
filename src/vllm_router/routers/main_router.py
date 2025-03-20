@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse, Response
 from vllm_router.dynamic_config import get_dynamic_config_watcher
 from vllm_router.log import init_logger
 from vllm_router.protocols import ModelCard, ModelList
-from vllm_router.service_discovery import get_service_discovery
+from vllm_router.service_discovery import get_service_discovery, request_store, kv_cache_ready_flags
 from vllm_router.services.request_service.request import route_general_request
 from vllm_router.stats.engine_stats import get_engine_stats_scraper
 from vllm_router.version import __version__
@@ -158,3 +158,34 @@ async def health() -> Response:
         )
     else:
         return JSONResponse(content={"status": "healthy"}, status_code=200)
+
+@main_router.post("/v1/kv_cache_ready")
+async def kv_cache_ready(request: Request):
+    """Handle notification that KV cache is ready and trigger decode request."""
+    req_data = await request.json()
+    request_id = req_data.get("request_id")
+    tp_size = req_data["world_size"]
+
+    if not request_id:
+        return JSONResponse(status_code=400, content={"error": "Missing request_id"})
+    
+    request_id = request_id.removeprefix("chatcmpl-")
+    # request_id, tp_size = request_id.split("_")[0], request_id.split("_")[1]
+    print(f"--- received kv_cach_ready {request_id} ")
+
+    # Print out the contents of both dictionaries
+    # print("===== request_store Contents =====")
+    # print(json.dumps(request_store, indent=4, default=str))  # Convert to JSON-like format
+
+    # print("===== kv_cache_ready_flags Contents =====")
+    # print(json.dumps(kv_cache_ready_flags, indent=4, default=str))
+
+    # if request_id not in request_store:
+        # return JSONResponse(status_code=404, content={"error": "Request not found"})
+
+    # Mark KV cache as ready in shared memory
+    kv_cache_ready_flags[request_id] += 1
+    if kv_cache_ready_flags[request_id] == tp_size:
+        kv_cache_ready_flags[request_id] = -1
+
+    return JSONResponse({"message": "KV cache ready, starting decode", "request_id": request_id})
