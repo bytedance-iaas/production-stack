@@ -12,10 +12,8 @@ from vllm_router.services.request_service.rewriter import (
     get_request_rewriter,
     is_request_rewriter_initialized,
 )
-from vllm_router.service_discovery import get_service_discovery, is_pd_enabled, request_store, kv_cache_ready_flags
+from vllm_router.service_discovery import get_service_discovery, is_pd_enabled, get_kv_cache_ready_flags_dict, get_cond
 import asyncio
-
-cond = asyncio.Condition()
 
 try:
     # Semantic cache integration
@@ -199,7 +197,8 @@ async def route_general_request(request: Request, endpoint: str):
             media_type="text/event-stream",
         )
     else:
-        # request_store[request_id] = request_json
+        kv_cache_ready_flags = get_kv_cache_ready_flags_dict()
+
         kv_cache_ready_flags[request_id] = 0 
 
         prefill_endpoints = get_service_discovery().get_endpoint_info_prefill()
@@ -209,10 +208,10 @@ async def route_general_request(request: Request, endpoint: str):
         request_stats_prefill = {k:v for k,v in request_stats.items() if k in prefill_endpoints}
         request_stats_decode = {k:v for k,v in request_stats.items() if k in decode_endpoints}        
         prefill_url = request.app.state.prefill_router.route_request(
-            endpoints, engine_stats_prefill, request_stats_prefill, request
+            prefill_endpoints, engine_stats_prefill, request_stats_prefill, request
         )
         decode_url = request.app.state.decode_router.route_request(
-            endpoints, engine_stats_decode, request_stats_decode, request
+            decode_endpoints, engine_stats_decode, request_stats_decode, request
         )
         prefill_req_data = request_json.copy()
         prefill_req_data['max_tokens'] = 1
@@ -223,21 +222,11 @@ async def route_general_request(request: Request, endpoint: str):
             json=prefill_req_data)
         response.raise_for_status()        
 
+        cond = get_cond()
         async with cond:
             while kv_cache_ready_flags.get(request_id, 0) != -1:
-                await asyncio.wait_for(cond.wait(), timeout=60)
-            # req_data = request_store.pop(request_id, None)
+                await cond.wait()
             kv_cache_ready_flags.pop(request_id, None)  # Cleanup
-
-        # if req_data is None:
-            # raise HTTPException(status_code=500, detail="Request lost in memory")
-
-        # # Retrieve the original request
-        # request_json = request_store.pop(request_id, None)
-        # kv_cache_ready_flags.pop(request_id, None)
-
-        # if request_json is None:
-        #     raise HTTPException(status_code=500, detail="Request lost in memory")
 
         stream_generator = process_request(
             request,

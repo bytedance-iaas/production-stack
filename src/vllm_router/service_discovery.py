@@ -10,22 +10,21 @@ import requests
 from kubernetes import client, config, watch
 
 from vllm_router.log import init_logger
-from multiprocessing import Manager
 
 logger = init_logger(__name__)
 
 _global_service_discovery: "Optional[ServiceDiscovery]" = None
 _global_enable_pd: bool = False
 
-manager = Manager()
-request_store = manager.dict()  # Stores request_id → request_data
-kv_cache_ready_flags = manager.dict() 
+kv_cache_ready_flags = {}
 
 class ServiceDiscoveryType(enum.Enum):
     STATIC = "static"
     K8S = "k8s"
     PD = "static_pd"
 
+import asyncio
+cond = asyncio.Condition()
 
 @dataclass
 class EndpointInfo:
@@ -385,6 +384,11 @@ def get_service_discovery() -> ServiceDiscovery:
 def is_pd_enabled() -> bool:
     return _global_enable_pd
 
+def get_kv_cache_ready_flags_dict():
+    return kv_cache_ready_flags
+
+def get_cond():
+    return cond
 
 if __name__ == "__main__":
     # Test the service discovery
